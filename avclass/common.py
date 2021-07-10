@@ -4,8 +4,9 @@ import re
 import string
 import sys
 
+from avclass import util
 from collections import defaultdict, namedtuple
-from typing import AnyStr, Collection, Dict, List, Optional, Set, Tuple, Union
+from typing import AnyStr, Callable, Collection, Dict, List, Optional, Set, Tuple, Union
 
 
 logger = logging.getLogger(__name__)
@@ -16,54 +17,90 @@ platform_prefix = "FILE:os:"
 # Default category for tags in taxonomy with no category
 uncategorized_cat = "UNC"
 
-SampleInfo = namedtuple('SampleInfo', 
-                        ['md5', 'sha1', 'sha256', 'labels', 'vt_tags'])
-
-Tag = namedtuple('Tag', ['name', 'cat', 'path', 'prefix_l'])
+SampleInfo = namedtuple("SampleInfo", ["md5", "sha1", "sha256", "labels", "vt_tags"])
 
 # AVs to use in suffix removal
-suffix_removal_av_set = {'Norman', 'Avast', 'Avira', 'Kaspersky',
-                         'ESET-NOD32', 'Fortinet', 'Jiangmin', 'Comodo',
-                         'GData', 'Avast', 'Sophos',
-                         'TrendMicro-HouseCall', 'TrendMicro',
-                         'NANO-Antivirus', 'Microsoft'}
+suffix_removal_av_set = {
+    "Norman",
+    "Avast",
+    "Avira",
+    "Kaspersky",
+    "ESET-NOD32",
+    "Fortinet",
+    "Jiangmin",
+    "Comodo",
+    "GData",
+    "Avast",
+    "Sophos",
+    "BitDefenderTheta",
+    "Alibaba",
+    "Tencent",
+    "Cyren",
+    "Arcabit",
+    "TrendMicro-HouseCall",
+    "TrendMicro",
+    "NANO-Antivirus",
+    "Microsoft",
+}
 
 
-def create_tag(s: AnyStr):
-    """
-    Create a Tag from its string representation (path)
+class Tag:
+    """ A Tag in the taxonomy """
 
-    :param s: The string
-    :return: A Tag object
-    """
-    word_list = s.strip().split(":")
-    if len(word_list) > 1:
-        name = word_list[-1].lower()
-        cat = word_list[0].upper()
-        prefix_l = [x.lower() for x in word_list[1:-1]]
-        path = cat
-        for x in prefix_l:
-            path = path + ':' + x
-        path = path + ':' + name
-    else:
-        name = word_list[0].lower()
-        cat = uncategorized_cat
-        prefix_l = []
-        path = name
-    return Tag(name, cat, path, prefix_l)
+    def __init__(self, s):
+        word_list = s.strip().split(":")
+        if len(word_list) > 1:
+            self._name = word_list[-1].lower()
+            self._cat = word_list[0].upper()
+            self._prefix_l = [x.lower() for x in word_list[1:-1]]
+            path = self._cat
+            for x in self._prefix_l:
+                path = path + ":" + x
+            self._path = path + ":" + self._name
+        else:
+            self._name = word_list[0].lower()
+            self._cat = uncategorized_cat
+            self._prefix_l = []
+            self._path = self._name
+
+    def __hash__(self):
+        """ Return hash """
+        return hash((self._path))
+
+    @property
+    def name(self):
+        """ Return tag name """
+        return self._name
+
+    @property
+    def cat(self):
+        """ Return tag category """
+        return self._cat
+
+    @property
+    def path(self):
+        """ Return tag path """
+        return self._path
+
+    @property
+    def prefix_l(self):
+        """ Return tag prefix list """
+        return self._prefix_l
 
 
 class Taxonomy:
     """
     Contains tags and generic tokens read from filesystem
     """
+
     def __init__(self, filepath: Optional[AnyStr]):
         """
         Initialize and populate the Tag map from ``filepath``
 
         :param filepath: Path to taxonomy data
         """
-        self.__tag_map = {}
+        self._tags = set()
+        self._tag_map = {}
         if filepath:
             self.read_taxonomy(filepath)
 
@@ -73,7 +110,11 @@ class Taxonomy:
 
         :return: The length (int) of the Taxonomy
         """
-        return len(self.__tag_map)//2  # TODO - perhaps there should be two dicts, one for names, one for paths?
+        return len(self._tags)
+
+    def __iter__(self):
+        """ Iterator over the alphabetically sorted tags in the taxonomy """
+        return (t for t in sorted(self._tags))
 
     def is_generic(self, tag: AnyStr) -> bool:
         """
@@ -82,8 +123,8 @@ class Taxonomy:
         :param tag: The tag
         :return: Boolean
         """
-        t = self.__tag_map.get(tag, None)
-        return getattr(t, 'cat', None) == 'GEN'
+        t = self._tag_map.get(tag, None)
+        return getattr(t, "cat", None) == "GEN"
 
     def is_tag(self, tag: AnyStr) -> bool:
         """
@@ -92,7 +133,7 @@ class Taxonomy:
         :param tag: The tag
         :return: Boolean
         """
-        return tag in self.__tag_map
+        return tag in self._tag_map
 
     def add_tag(self, s: AnyStr, override: bool = False):
         """
@@ -102,19 +143,19 @@ class Taxonomy:
         :param override: Whether or not to replace a duplicate if present
         :return: None
         """
-        tag = create_tag(s)
-        t = self.__tag_map.get(tag.name, None)
+        tag = Tag(s)
+        t = self._tag_map.get(tag.name, None)
 
         if t and (t.path != tag.path):
             if override:
                 logger.warning("[Taxonomy] Replacing %s with %s\n" % t.path, tag.path)
-                del self.__tag_map[t.path]
+                del self._tag_map[t.path]
             else:
                 return
 
         logger.debug("[Taxonomy] Adding tag %s" % s)
-        self.__tag_map[tag.name] = tag
-        self.__tag_map[tag.path] = tag
+        self._tag_map[tag.name] = tag
+        self._tag_map[tag.path] = tag
 
     def remove_tag(self, tag: AnyStr) -> bool:
         """
@@ -123,11 +164,12 @@ class Taxonomy:
         :param tag: The tag to remove
         :return: Whether or not the tag was present
         """
-        t = self.__tag_map.get(tag, None)
+        t = self._tag_map.get(tag, None)
         if tag:
             logger.debug("[Taxonomy] Removing tag: %s" % t.path)
-            del self.__tag_map[t.name]
-            del self.__tag_map[t.path]
+            del self._tag_map[t.name]
+            del self._tag_map[t.path]
+            self._tags.remove(tag)
         return t is not None
 
     def get_category(self, tag: AnyStr) -> AnyStr:
@@ -137,8 +179,8 @@ class Taxonomy:
         :param tag: The tag
         :return: The category
         """
-        t = self.__tag_map.get(tag, None)
-        return getattr(t, 'cat', 'UNK')
+        t = self._tag_map.get(tag, None)
+        return getattr(t, "cat", "UNK")
 
     def get_path(self, tag: AnyStr) -> AnyStr:
         """
@@ -147,8 +189,8 @@ class Taxonomy:
         :param tag: The tag
         :return: The tag's path
         """
-        t = self.__tag_map.get(tag, None)
-        return getattr(t, 'path', f'UNK:{tag}')
+        t = self._tag_map.get(tag, None)
+        return getattr(t, "path", f"UNK:{tag}")
 
     def get_prefix_l(self, tag: AnyStr) -> List[AnyStr]:
         """
@@ -157,8 +199,8 @@ class Taxonomy:
         :param tag: The tag
         :return: The tag's prefix list
         """
-        t = self.__tag_map.get(tag, None)
-        return getattr(t, 'prefix_l', [])
+        t = self._tag_map.get(tag, None)
+        return getattr(t, "prefix_l", [])
 
     def get_prefix(self, tag: AnyStr) -> List[AnyStr]:
         """
@@ -167,8 +209,8 @@ class Taxonomy:
         :param tag: The tag
         :return: String representation of the tag's full prefix
         """
-        t = self.__tag_map.get(tag, None)
-        tag_pfx = tag.path.split(':')[:-1]
+        t = self._tag_map.get(tag, None)
+        tag_pfx = tag.path.split(":")[:-1]
         return t.prefix_l if t else tag_pfx
 
     def get_depth(self, tag: AnyStr) -> int:
@@ -178,7 +220,7 @@ class Taxonomy:
         :param tag: The tag
         :return: The depth (int) of the tag
         """
-        t = self.__tag_map.get(tag, None)
+        t = self._tag_map.get(tag, None)
         if t:
             return len(tag.prefix_l) + 2
         return 0
@@ -190,7 +232,7 @@ class Taxonomy:
         :param tag: The tag
         :return: Tuple containing tag.path and tag.cat
         """
-        t = self.__tag_map.get(tag, None)
+        t = self._tag_map.get(tag, None)
         if t:
             return t.path, t.cat
         return f"UNK:{tag}", "UNK"
@@ -202,9 +244,9 @@ class Taxonomy:
         :param tag: The tag
         :return: A list of prefixes
         """
-        t = self.__tag_map.get(tag, None)
+        t = self._tag_map.get(tag, None)
         if t:
-            return [x for x in t.prefix_l if x in self.__tag_map]
+            return [x for x in t.prefix_l if x in self._tag_map]
         return []
 
     def platform_tags(self) -> Set[AnyStr]:
@@ -213,7 +255,11 @@ class Taxonomy:
 
         :return: Set of platformn tags
         """
-        return {tag.name for _, tag in self.__tag_map.items() if tag.path.startswith(platform_prefix)}
+        return {
+            tag.name
+            for _, tag in self._tag_map.items()
+            if tag.path.startswith(platform_prefix)
+        }
 
     def overlaps(self, t1: AnyStr, t2: AnyStr) -> bool:
         """
@@ -227,7 +273,9 @@ class Taxonomy:
         m2 = self.get_prefix_l(t2)
         return t1 in m2 or t2 in m1
 
-    def remove_overlaps(self, l: Collection[AnyStr]) -> Union[Collection[AnyStr], List[AnyStr]]:
+    def remove_overlaps(
+        self, l: Collection[AnyStr]
+    ) -> Union[Collection[AnyStr], List[AnyStr]]:
         """
         Returns list with overlapping tags removed
 
@@ -252,10 +300,10 @@ class Taxonomy:
         :param filepath: The path of the file to read
         :return: None
         """
-        with open(filepath, 'r') as fd:
+        with open(filepath, "r") as fd:
             for line in fd:
                 line = line.strip()
-                if not line.startswith('#') and line:
+                if not line.startswith("#") and line:
                     self.add_tag(line)
 
     def to_file(self, filepath: AnyStr):
@@ -265,9 +313,8 @@ class Taxonomy:
         :param filepath: The path to write
         :return: None
         """
-        with open(filepath, 'w') as fd:
-            tag_l = sorted(self.__tag_map.items(),
-                           key=lambda item: item[1].path)
+        with open(filepath, "w") as fd:
+            tag_l = sorted(self._tag_map.items(), key=lambda item: item[1].path)
             idx = 0
             for name, tag in tag_l:
                 if (idx % 2) == 0:
@@ -279,13 +326,14 @@ class Rules:
     """
     Map a single source with one or more destinations
     """
+
     def __init__(self, filepath: Optional[AnyStr]):
         """
         Initialize the rule-map and read rules from ``filepath``
 
         :param filepath: The file to read from
         """
-        self._rmap = {}
+        self._src_map = {}
         if filepath:
             self.read_rules(filepath)
 
@@ -295,9 +343,11 @@ class Rules:
 
         :return: Number of rules
         """
-        return len(self._rmap)
+        return len(self._src_map)
 
-    def add_rule(self, src: AnyStr, dst_l: Collection[AnyStr] = None, overwrite: bool = False):
+    def add_rule(
+        self, src: AnyStr, dst_l: Collection[AnyStr] = None, overwrite: bool = False
+    ):
         """
         Add a rule to the map.  On duplicate, append destinations.  If ``overwrite`` is set, replace rule src/dst.
 
@@ -312,22 +362,22 @@ class Rules:
             return
 
         logger.debug("[Rules] Adding %s -> %s" % (src, dst_l))
-        src_tag = create_tag(src)
+        src_tag = Tag(src)
         if overwrite:
-            target_l = [create_tag(dst).name for dst in dst_l]
-            self._rmap[src_tag.name] = set(target_l)
+            target_l = [Tag(dst).name for dst in dst_l]
+            self._src_map[src_tag.name] = set(target_l)
         else:
-            curr_dst = self._rmap.get(src_tag.name, set())
+            curr_dst = self._src_map.get(src_tag.name, set())
             for dst in dst_l:
-                dst_tag = create_tag(dst)
+                dst_tag = Tag(dst)
                 curr_dst.add(dst_tag.name)
-            self._rmap[src_tag.name] = curr_dst
+            self._src_map[src_tag.name] = curr_dst
 
     def remove_rule(self, src: AnyStr) -> bool:
-        dst = self._rmap.get(src, [])
+        dst = self._src_map.get(src, [])
         if dst:
             logger.debug("[Rules] Removing rule: %s -> %s" % (src, dst))
-            del self._rmap[src]
+            del self._src_map[src]
             return True
         return False
 
@@ -338,7 +388,7 @@ class Rules:
         :param src: The source rule
         :return: List of dst
         """
-        return list(self._rmap.get(src, []))
+        return list(self._src_map.get(src, []))
 
     def read_rules(self, filepath: AnyStr):
         """
@@ -347,10 +397,10 @@ class Rules:
         :param filepath: The path of the file to read
         :return: None
         """
-        with open(filepath, 'r') as fd:
+        with open(filepath, "r") as fd:
             for line in fd:
                 line = line.strip()
-                if not line.startswith('#') and line:
+                if not line.startswith("#") and line:
                     word_list = line.split()
                     if len(word_list) > 1:
                         self.add_rule(word_list[0], word_list[1:])
@@ -363,16 +413,16 @@ class Rules:
         :param taxonomy: A Taxonomy to optionally resolve full tag paths
         :return: None
         """
-        with open(filepath, 'w') as fd:
-            for src, dst_set in sorted(self._rmap.items()):
+        with open(filepath, "w") as fd:
+            for src, dst_set in sorted(self._src_map.items()):
                 dst_l = sorted(dst_set)
                 if taxonomy:
                     src_path = taxonomy.get_path(src)
                     path_l = [taxonomy.get_path(t) for t in dst_l]
-                    dst_str = '\t'.join(path_l)
+                    dst_str = "\t".join(path_l)
                     fd.write("%s\t%s\n" % (src_path, dst_str))
                 else:
-                    dst_str = '\t'.join(dst_l)
+                    dst_str = "\t".join(dst_l)
                     fd.write("%s\t%s\n" % (src, dst_str))
 
     def expand_src_destinations(self, src: AnyStr) -> Set[AnyStr]:
@@ -383,11 +433,11 @@ class Rules:
         :return: List of expanded destinations
         """
         # TODO - this only goes one layer deep it seems.  Not actually recursive
-        dst_set = self._rmap.get(src, set())
+        dst_set = self._src_map.get(src, set())
         out = set()
         while dst_set:
             dst = dst_set.pop()
-            dst_l = self._rmap.get(dst, [])
+            dst_l = self._src_map.get(dst, [])
             if dst_l:
                 for d in dst_l:
                     if d not in out and d != dst:
@@ -402,16 +452,17 @@ class Rules:
 
         :return: None
         """
-        src_l = self._rmap.keys()
+        src_l = self._src_map.keys()
         for src in src_l:
             dst_l = self.expand_src_destinations(src)
-            self._rmap[src] = dst_l
+            self._src_map[src] = dst_l
 
 
 class Translation(Rules):
     """
     Translations are a set of rules that convert between unknown labels and labels that are in our Taxonomy
     """
+
     def __init__(self, filepath: AnyStr):
         super().__init__(filepath)
 
@@ -422,7 +473,9 @@ class Translation(Rules):
         :param taxonomy: The Taxonomy to use for checking
         :return: None
         """
-        for tok, tag_l in self._rmap.items():
+        for tok, tag_l in self._src_map.items():
+            if taxonomy.is_tag(tok):
+                sys.stdout.write("[Tagging] SRC %s in taxonomy\n" % tok)
             for t in tag_l:
                 if not taxonomy.is_tag(t):
                     sys.stdout.write("[Tagging] %s not in taxonomy\n" % t)
@@ -433,6 +486,7 @@ class Expansion(Rules):
     """
     Expansions are rules that allow us to map a single label (src) to all explicit and implicit labels
     """
+
     def __init__(self, filepath: AnyStr):
         super().__init__(filepath)
 
@@ -443,7 +497,7 @@ class Expansion(Rules):
         :param taxonomy: The Taxonomy to use for checking
         :return: None
         """
-        for src, dst_set in self._rmap.items():
+        for src, dst_set in self._src_map.items():
             if not taxonomy.is_tag(src):
                 sys.stdout.write("[Expansion] %s not in taxonomy\n" % src)
                 # TODO - raise or return False?
@@ -457,14 +511,43 @@ class AvLabels:
     """
     Primary class used to interpret AV Labels
     """
-    def __init__(self, tag_file: AnyStr, exp_file: AnyStr = None, tax_file: AnyStr = None, av_file: AnyStr = None,
-                 alias_detect: AnyStr = False):
+
+    def __init__(
+        self,
+        tag_file: AnyStr = util.DEFAULT_TAG_PATH,
+        exp_file: AnyStr = util.DEFAULT_EXP_PATH,
+        tax_file: AnyStr = util.DEFAULT_TAX_PATH,
+        av_file: AnyStr = None,
+        alias_detect: bool = False,
+    ):
         self.taxonomy = Taxonomy(tax_file)
         self.translations = Translation(tag_file)
         self.expansions = Expansion(exp_file)
         self.avs = self.read_avs(av_file) if av_file else None
         # Alias statistics initialization
         self.alias_detect = alias_detect
+
+    def get_sample_call(self, data_type: AnyStr) -> Callable:
+        """
+        Return the correct parser for the report type
+
+        :param data_type: the type of file vt2, vt3, lb, md
+        :return: Callable function that returns SampleInfo
+        """
+        if data_type == "lb":
+            return self.get_sample_info_lb
+        elif data_type == "vt" or data_type == "vt2":
+            return self.get_sample_info_vt_v2
+        elif data_type == "vt3":
+            return self.get_sample_info_vt_v3
+        elif data_type == "md":
+            return self.get_sample_info_md
+        else:
+            sys.stderr.write(
+                "Invalid data type for sample: %s (should be vt, vt2, vt3, lb, md)"
+                % data_type
+            )
+            return self.get_sample_info_vt_v3
 
     @staticmethod
     def read_avs(avs_file: AnyStr) -> Set[AnyStr]:
@@ -486,66 +569,102 @@ class AvLabels:
         :param record: The JSON record
         :return: An instance of SampleInfo
         """
-        return SampleInfo(record['md5'], record['sha1'], record['sha256'], record['av_labels'], [])
+        return SampleInfo(
+            record["md5"], record["sha1"], record["sha256"], record["av_labels"], []
+        )
 
     @staticmethod
-    def get_sample_info_vt_v2(record):
+    def get_sample_info_vt_v2(record: Dict) -> SampleInfo:
         """
-        Convert VT (v2) JSON to a SampleInfo object
+        Convert VirusTotal (v2) JSON to a SampleInfo object
 
         :param record: The JSON record
         :return: An instance of SampleInfo
         """
         try:
-            scans = record['scans']
-            md5 = record['md5']
-            sha1 = record['sha1']
-            sha256 = record['sha256']
+            scans = record["scans"]
+            md5 = record["md5"]
+            sha1 = record["sha1"]
+            sha256 = record["sha256"]
         except KeyError:
             return None
 
         # Obtain labels from scan results
         label_pairs = []
         for av, res in scans.items():
-            if res['detected']:
-                label = res['result']
-                clean_label = ''.join(filter(lambda x: x in string.printable, label)).strip()
+            if res["detected"]:
+                label = res["result"]
+                clean_label = "".join(
+                    filter(lambda x: x in string.printable, label)
+                ).strip()
                 label_pairs.append((av, clean_label))
 
-        vt_tags = record.get('tags', [])
+        vt_tags = record.get("tags", [])
 
         return SampleInfo(md5, sha1, sha256, label_pairs, vt_tags)
 
     @staticmethod
-    def get_sample_info_vt_v3(record):
+    def get_sample_info_vt_v3(record: Dict) -> SampleInfo:
         """
-        Convert VT (v3) JSON to a SampleInfo object
+        Convert VirusTotal (v3) JSON to a SampleInfo object
 
         :param record: The JSON record
         :return: An instance of SampleInfo
         """
+        if "data" in record:
+            record = record["data"]
         try:
-            scans = record['data']['attributes']['last_analysis_results']
-            md5 = record['data']['attributes']['md5']
-            sha1 = record['data']['attributes']['sha1']
-            sha256 = record['data']['attributes']['sha256']
+            scans = record["attributes"]["last_analysis_results"]
+            md5 = record["attributes"]["md5"]
+            sha1 = record["attributes"]["sha1"]
+            sha256 = record["attributes"]["sha256"]
         except KeyError:
             return None
 
         # Obtain labels from scan results
         label_pairs = []
         for av, res in scans.items():
-            label = res['result']
+            label = res["result"]
             if label is not None:
-                clean_label = ''.join(filter(lambda x: x in string.printable, label)).strip()
+                clean_label = "".join(
+                    filter(lambda x: x in string.printable, label)
+                ).strip()
                 label_pairs.append((av, clean_label))
 
-        vt_tags = record['data']['attributes'].get('tags', [])
+        vt_tags = record["attributes"].get("tags", [])
 
         return SampleInfo(md5, sha1, sha256, label_pairs, vt_tags)
 
     @staticmethod
-    def is_pup(tag_pairs, taxonomy: Taxonomy) -> Optional[bool]:
+    def get_sample_info_md(record: Dict) -> SampleInfo:
+        """
+        Convert OPSWAT MetaDefender JSON to a SampleInfo object
+
+        :param record: The JSON record
+        :return: An instance of SampleInfo
+        """
+        try:
+            scans = record["scan_results"]["scan_details"]
+            md5 = record["file_info"]["md5"]
+            sha1 = record["file_info"]["sha1"]
+            sha256 = record["file_info"]["sha256"]
+        except KeyError:
+            return None
+
+        # Obtain labels from scan results
+        label_pairs = []
+        for av, res in scans.items():
+            label = res["threat_found"]
+            if label is not None and res["scan_result_i"] == 1:
+                clean_label = "".join(
+                    filter(lambda x: x in string.printable, label)
+                ).strip()
+                label_pairs.append((av, clean_label))
+
+        return SampleInfo(md5, sha1, sha256, label_pairs, [])
+
+    @staticmethod
+    def is_pup(tag_pairs: List[Tuple], taxonomy: Taxonomy) -> Optional[bool]:
         """
         Attempts to classify a sample (represented by ``tag_pairs``) as a PUP.  We accomplish this by checking for the
         "grayware" label in the highest ranked CLASS.
@@ -563,13 +682,13 @@ class AvLabels:
             path, cat = taxonomy.get_info(tag)
             if cat == "CLASS":
                 if "grayware" in path:
-                    return float(ctr) >= float(max_ctr)*threshold
+                    return float(ctr) >= float(max_ctr) * threshold
                 else:
                     return False
         return False
 
     @staticmethod
-    def __remove_suffixes(av_name: AnyStr, label: AnyStr) -> AnyStr:
+    def _remove_suffixes(av_name: AnyStr, label: AnyStr) -> AnyStr:
         """
         Remove vendor-specific suffixes from the label
 
@@ -579,18 +698,18 @@ class AvLabels:
         """
         # Truncate after last '.'
         if av_name in suffix_removal_av_set:
-            label = label.rsplit('.', 1)[0]
+            label = label.rsplit(".", 1)[0]
 
-        # Truncate after last '.' 
+        # Truncate after last '.'
         # if suffix only contains digits or uppercase (no lowercase) chars
-        if av_name == 'AVG':
-            tokens = label.rsplit('.', 1)
+        if av_name == "AVG":
+            tokens = label.rsplit(".", 1)
             if len(tokens) > 1 and re.match("^[A-Z0-9]+$", tokens[1]):
                 label = tokens[0]
 
         # Truncate after last '!'
-        if av_name == 'Agnitum':
-            label = label.rsplit('!', 1)[0]
+        if av_name == "Agnitum":
+            label = label.rsplit("!", 1)[0]
 
         return label
 
@@ -620,7 +739,7 @@ class AvLabels:
                 token = token[:-end_len]
 
             # Ignore token if prefix of a hash of the sample
-            # Most AVs use MD5 prefixes in labels, 
+            # Most AVs use MD5 prefixes in labels,
             # but we check SHA1 and SHA256 as well
             if any([h.startswith(token) for h in hashes]):
                 continue
@@ -643,7 +762,7 @@ class AvLabels:
         # Return tags
         return tags
 
-    def __expand(self, tag_set: Set[AnyStr]) -> Set[AnyStr]:
+    def _expand(self, tag_set: Set[AnyStr]) -> Set[AnyStr]:
         """
         Expand tags into more tags using expansion rules and the Taxonomy
 
@@ -675,17 +794,17 @@ class AvLabels:
 
         # Process each AV label
         for av_name, label in sample_info.labels:
-            if not label or av_name not in self.avs:
+            if not label or (self.avs and av_name not in self.avs):
                 continue
 
             # Emsisoft uses same label as
             # GData/ESET-NOD32/BitDefender/Ad-Aware/MicroWorld-eScan,
             # but suffixes ' (B)' to their label. Remove the suffix.
-            label = label.rstrip(' (B)')
+            label = label.rstrip(" (B)")
 
             # F-Secure uses Avira's engine since Nov. 2018
             # but prefixes 'Malware.' to Avira's label. Remove the prefix.
-            label = label.lstrip('Malware.')
+            label = label.lstrip("Malware.")
 
             # Other engines often use exactly the same label, e.g.,
             #   AVG/Avast
@@ -697,12 +816,12 @@ class AvLabels:
 
             duplicates.add(label)
 
-            label = self.__remove_suffixes(av_name, label)
+            label = self._remove_suffixes(av_name, label)
             hashes = [sample_info.md5, sample_info.sha1, sample_info.sha256]
             tags = self.get_label_tags(label, hashes)
 
             # NOTE: Avoid expansion when aliases are set
-            expanded_tags = tags if self.alias_detect else self.__expand(tags)
+            expanded_tags = tags if self.alias_detect else self._expand(tags)
 
             # store av vendors for each tag
             for t in expanded_tags:
@@ -711,7 +830,9 @@ class AvLabels:
         return av_dict
 
     @staticmethod
-    def rank_tags(av_dict: Dict[AnyStr, List[AnyStr]], threshold: int = 1) -> List[Tuple[AnyStr, int]]:
+    def rank_tags(
+        av_dict: Dict[AnyStr, List[AnyStr]], threshold: int = 1
+    ) -> List[Tuple[AnyStr, int]]:
         """
         Get a list of tuples containing a tag and the number of AV that confirmed that tag sorted by number of AV
         (descending).

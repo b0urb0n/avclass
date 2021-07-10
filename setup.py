@@ -20,6 +20,7 @@ setup(
     entry_points={
         'console_scripts': [
             'avclass = avclass.labeler:main',
-            'avclass-validate = avclass.util:validate_files',
+            'avclass-validate = avclass.cli:validate_files',
+            'avclass-update = avclass.update:main',
         ],
     })
